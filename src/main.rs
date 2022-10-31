@@ -82,28 +82,28 @@ fn make_devices(root: &str) {
     }
 }
 
-fn make_device_if_not_exists(path: String, mode: mode_t, dev: dev_t) -> i32 {
+fn make_device_if_not_exists(path: String, mode: mode_t, dev: dev_t) {
     if !Path::new(&path).exists() {
         let err = makenod(&path, S_IFCHR | mode, dev);
-	handle_os_error(err, format!("{}", path));
+        handle_os_error(err, format!("{}", path));
     }
 }
 
 fn makenod(path: &String, mode: mode_t, dev: dev_t) -> i32 {
     unsafe {
         mknod(
-	    CString::new(path.as_bytes())
-	        .expect("Error in construct CString")
-		.as_bytes_with_null()
-		.as_ptr() as *const libc::c_char,
-	    mode,
-	    dev,
-	)
+	        CString::new(path.as_bytes())
+	            .expect("Error in construct CString")
+		    .as_bytes_with_nul()
+		    .as_ptr() as *const libc::c_char,
+	        mode,
+	        dev,
+	    )
     }
 }
 
 fn makedev(maj: u64, min: u64) -> dev_t {
-    ((min & 0xff) | (maj & 0xfff) << 8) | ((min & !0xff)) << 12 | ((maj & !0xfff)) << 32))
+    ((min & 0xff) | ((maj & 0xfff) << 8) | (((min & !0xff)) << 12) | (((maj & !0xfff)) << 32))
         as dev_t
 }
 
@@ -131,7 +131,7 @@ fn exec_chroot(root: &str) {
     let err = unsafe {
         chroot(CString::new(".".as_bytes())
 	    .expect("Error in construct CString")
-	    .as_bytes_with_null()
+	    .as_bytes_with_nul()
 	    .as_ptr() as *const libc::c_char)
     };
     handle_os_error(err, "chroot");
@@ -140,8 +140,8 @@ fn exec_chroot(root: &str) {
 fn drop_capabilities() {
     let allowed_caps = vec![
         Capability::CAP_SETGID,
-	Capability::CAP_SETGID,
-		Capability::CAP_NE_BIND_SERVICE,
+	    Capability::CAP_SETGID,
+		Capability::CAP_NET_BIND_SERVICE,
     ];
     let cur = caps::read(None, CapSet::Bounding).expect("Cannot read capabilities");
     for c in cur {
@@ -163,7 +163,7 @@ fn exec_command<'a>(commands: Option<clap::Values>) {
 	.unwrap_or_else(|e| panic!("Cannot exec: {}", e));
 }
 
-fn create_dir_permissions(root: &str) {
+fn change_dir_permissions(root: &str) {
     for d in TMP_DIRS.iter() {
         let metadata = fs::metadata(format!("{}/{}", root, d)).expect(&format!("Failed to get metadata {}", d));
 	let mut permissions = metadata.permissions();
@@ -172,11 +172,43 @@ fn create_dir_permissions(root: &str) {
 }
 
 fn copy_files(root: &str) {
-    for i in COPY_FILES {
+    for f in COPY_FILES {
         fs::copy(format!("/{}", f), format!("{}/{}", root, f)).expect(&format!("Failed to copy file {}", f));
     }
 }
-
+fn get_args<'a>() -> clap::ArgMatches<'a> {
+    App::new("jl")
+        .version("0.0.1")
+        .about("Simple jailing tool using chroot")
+        .args(&[
+            Arg::with_name("root")
+                .short("r")
+                .long("root")
+                .value_name("PATH")
+                .help("root directory to chroot")
+                .takes_value(true)
+                .required(true),
+            Arg::with_name("command")
+                .help("command")
+                .multiple(true)
+                .required(false),
+        ])
+        .get_matches()
+}
 fn main() {
-    println!("Hello, world!");
+    let args = get_args();
+    let root = args.value_of("root").unwrap();
+    let commands = args.values_of("commands");
+    if !Path::new(&root).exists() {
+        panic!("Cannot find root path {}", &root);
+    }
+    create_dirs(root);
+    change_dir_permissions(root);
+    
+    copy_files(root);
+    bind_mount(root);
+    make_devices(root);
+    exec_chroot(root);
+    drop_capabilities();
+    exec_command(commands);
 }
